@@ -1,0 +1,30 @@
+{
+  "name": "perceptor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "cf dev",
+    "build": "cf build",
+    "deploy": "cf deploy",
+    "typecheck": "cf workers types && tsc && tsc -p test/tsconfig.json && tsc -p tsconfig.tools.json",
+    "check": "vp check && pnpm typecheck",
+    "format": "vp fmt",
+    "test": "vp test run",
+    "test:watch": "vp test",
+    "deploy:dry-run": "cf deploy --dry-run"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "2.0.0-beta.v.12",
+    "@cloudflare/vitest-plugin": "1.6.0",
+    "@types/node": "^24.19.2",
+    "cf": "1.0.0-beta.28",
+    "typescript": "^7.0.2",
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": "^24.22.0"
+  },
+  "packageManager": "pnpm@10.34.5"
+}

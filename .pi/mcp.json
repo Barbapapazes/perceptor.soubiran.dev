@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cloudflare": {
+      "url": "https://mcp.cloudflare.com/mcp",
+      "description": "Accès aux API Cloudflare avec les permissions du compte autorisé."
+    }
+  }
+}
