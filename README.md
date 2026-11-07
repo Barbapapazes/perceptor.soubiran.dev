@@ -43,9 +43,12 @@ is stored in the object's SQLite database, separately from Pi's `pi_*` tables.
 No filesystem workspace, shell, MCP connection, arbitrary execution, Queue,
 Workflow or browser session is needed.
 
-`GET /` returns public service metadata only. There is no public run, mutation,
-transcript or credential endpoint. Internal `begin(scheduledTime)` RPC can redispatch
-the same run identity; it does not overwrite completed/failed selections.
+`GET /` returns public service metadata only (liveness, not research health). There
+is no public run trigger, transcript or credential endpoint. `/ops/*` requires a
+separate operations secret and exposes summaries, selected evidence, operational
+health and human-review feedback—not research or delivery controls. Internal
+`begin(scheduledTime)` RPC can redispatch the same retained run identity; it does
+not overwrite completed/failed selections.
 
 ### Limits and recovery
 
@@ -73,15 +76,27 @@ the same run identity; it does not overwrite completed/failed selections.
 - The API checks `Idempotency-Key == batch_id` and deduplicates by URL. This is not
   a transactional exactly-once guarantee across Cloudflare and the API.
 - Failed runs retain state and log `perceptor.failed`; successful delivery logs
-  `perceptor.delivered`; empty selections log `perceptor.empty`. Configure a Workers
-  log alert for failures before unattended production use. No secrets or source
-  bodies are written to these application logs.
+  `perceptor.delivered`; empty selections log `perceptor.empty`. A separate hourly
+  cron reconciles authoritative run state and detects missing, failed, stalled and
+  overdue runs. Configure Issues notification destinations and an external check of
+  `/ops/health` before unattended production use. Default application logs/traces do
+  not contain credentials, queries, prompts or source bodies.
 
 Pi Durable is experimental. `agents@0.33.0` and the Pi packages are pinned to the
 compatible `1.5.0` line. Do not roll conversation data back to an older Pi minor.
-Retain per-run objects for now; add an explicit retention/deletion policy before
-long-term operation. Browser fallback and late-discovered older articles are not
-part of v1; unreadable or undated sources are skipped rather than guessed.
+Terminal run evidence, Pi data, summaries and review feedback expire after 180 days
+via the watchdog's retention sweep (active runs are never automatically deleted).
+Small expiration tombstones prevent redispatching deleted runs. Browser fallback
+and late-discovered older articles are not part of v1; unreadable or undated sources
+are skipped rather than guessed.
+
+## Observability
+
+See **[the observability runbook](docs/observability.md)** for Cloudflare Agent
+Tracing, Gateway correlation, privacy/payload controls, operations/review examples,
+retention, watchdog thresholds, notification setup and the supervised rollout checklist.
+The Agents dashboard is the execution-debugging UI; durable summaries plus review
+feedback are the long-term evaluation record. Native traces are not lossless evidence.
 
 ## Configuration and credentials
 
@@ -95,6 +110,10 @@ Configured bindings:
 | --- | --- |
 | `AI` | Workers AI binding for Gateway inference/search and document conversion |
 | `RESEARCH` | SQLite-backed `ResearchAgent` Durable Object |
+| `OBSERVATIONS` | Separate SQLite-backed observation store and watchdog |
+| `VERSION` | Cloudflare deployment/version metadata |
+| `OPERATIONS_TOKEN` | Secret: independent operations API bearer token, at least 32 characters |
+| `TRACE_PAYLOADS` | `false` by default; explicitly opt in to bounded replay payloads |
 | `AI_GATEWAY` | Gateway ID, default `perceptor` |
 | `MODEL` | Catalog model, default `openai/gpt-6.1-sol` |
 | `ACCESS_CLIENT_ID` | Secret: API Cloudflare Access service-token client ID |
@@ -117,8 +136,12 @@ Before deploying:
    policy for the API's internal submission endpoint. The origin must not allow an
    Access bypass. Store the two secrets using Cloudflare's dashboard/secret tooling.
    Perceptor does **not** use Laravel bearer authentication.
-5. Review the cron, Gateway, model, account and observability settings, then deploy
-   a CI-built artifact intentionally. No deployment is performed by installation.
+5. Provision a separate high-entropy `OPERATIONS_TOKEN` of at least 32 characters.
+   Configure Issues automations, an external authenticated `/ops/health` check, and
+   optional OTel exports as described in the observability runbook. Review the weekly
+   and watchdog cron schedules, Gateway, model, privacy and retention settings.
+6. Deploy a CI-built artifact intentionally. No deployment is performed by
+   installation. Perform an explicitly authorized supervised run before unattended use.
 
 Access headers are attached only to the fixed API submission URL; the model cannot
 choose an authenticated destination. Public feed requests and research tools never
@@ -147,6 +170,8 @@ from cf authentication and the API Access service token.
 
 ## References
 
+- [Agent Tracing](https://developers.cloudflare.com/agents/runtime/observability/tracing/)
+- [Workers custom spans](https://developers.cloudflare.com/workers/observability/traces/custom-spans/)
 - [Pi harness](https://developers.cloudflare.com/agents/harnesses/pi/)
 - [Pi extensions and replay safety](https://developers.cloudflare.com/agents/harnesses/pi/extensions/)
 - [Pi AI / Gateway provider](https://developers.cloudflare.com/agents/models/pi-ai/)

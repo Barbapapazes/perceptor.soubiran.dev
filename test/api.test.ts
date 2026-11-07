@@ -44,7 +44,7 @@ describe("discovery delivery", () => {
   ] as const)("classifies HTTP %i for delivery retry", async (status, retryable) => {
     const request = vi.fn<typeof fetch>().mockResolvedValue(new Response("error", { status }));
 
-    await expect(deliverBatch(batch, credentials, request)).rejects.toMatchObject({ retryable });
+    await expect(deliverBatch(batch, credentials, request)).rejects.toMatchObject({ retryable, status, code: "delivery_http" });
   });
 
   it("retries network failures and rejects mismatched acknowledgements", async () => {

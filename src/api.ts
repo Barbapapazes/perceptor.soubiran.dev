@@ -5,12 +5,13 @@ const ORIGIN = "https://api.soubiran.dev";
 export const SUBMISSION_URL = `${ORIGIN}/api/internal/quick-news-submissions`;
 
 export class DeliveryError extends Error {
-  constructor(message: string, readonly retryable: boolean) {
+  readonly name = "DeliveryError";
+  constructor(message: string, readonly retryable: boolean, readonly code = "delivery_error", readonly status?: number) {
     super(message);
   }
 }
 
-export async function boundedJson(response: Response): Promise<unknown> {
+export async function boundedJson(response: Response, maxBytes = 1_000_000): Promise<unknown> {
   if (!response.body) throw new Error("Missing JSON response");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -19,7 +20,7 @@ export async function boundedJson(response: Response): Promise<unknown> {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.length;
-    if (size > 1_000_000) {
+    if (size > maxBytes) {
       await reader.cancel();
       throw new Error("JSON response exceeds size limit");
     }
@@ -76,18 +77,18 @@ export async function deliverBatch(
       body: JSON.stringify(batch),
     });
   } catch {
-    throw new DeliveryError("Submission network failure (or unexpected redirect)", true);
+    throw new DeliveryError("Submission network failure (or unexpected redirect)", true, "delivery_network");
   }
   if (!response.ok) {
     await response.body?.cancel();
     throw new DeliveryError(`Submission returned HTTP ${response.status}`,
-      response.status === 408 || response.status === 429 || response.status >= 500);
+      response.status === 408 || response.status === 429 || response.status >= 500, "delivery_http", response.status);
   }
   const result = await boundedJson(response) as { batch_id?: string; collection_id?: string; articles?: { id?: string; url?: string }[] };
   if (result.batch_id !== batch.batch_id || result.collection_id !== batch.collection_id ||
     !Array.isArray(result.articles) || result.articles.length !== batch.articles.length ||
     !result.articles.every((item, index) => typeof item.id === "string" && item.url === batch.articles[index].link)) {
-    throw new DeliveryError("Submission acknowledgement does not match the batch", true);
+    throw new DeliveryError("Submission acknowledgement does not match the batch", true, "delivery_acknowledgement");
   }
   return result;
 }

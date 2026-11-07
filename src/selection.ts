@@ -19,6 +19,10 @@ export const SelectionSchema = obj({
 export type Selection = Static<typeof SelectionSchema>;
 export type Article = Pick<Selection["articles"][number], "title" | "link" | "description">;
 export type Window = { start: string; end: string; collectionId: string };
+export class SelectionError extends Error {
+  readonly name = "SelectionError";
+  constructor(readonly code: string, message: string) { super(message); }
+}
 const selectionValidator = compile(SelectionSchema);
 const tracking = new Set([
   "fbclid", "gclid", "dclid", "gbraid", "wbraid", "msclkid", "twclid", "ttclid",
@@ -26,10 +30,12 @@ const tracking = new Set([
 ]);
 
 export function canonicalUrl(value: string): string {
-  const url = new URL(value);
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new SelectionError("invalid_url", "Only public HTTP(S) article URLs are accepted"); }
   if (!["https:", "http:"].includes(url.protocol) || url.username || url.password ||
     isPrivateOrLocalHost(url.hostname) || url.port && !["80", "443"].includes(url.port)) {
-    throw new Error("Only public HTTP(S) article URLs are accepted");
+    throw new SelectionError("invalid_url", "Only public HTTP(S) article URLs are accepted");
   }
   url.hash = "";
   const isX = ["x.com", "www.x.com"].includes(url.hostname);
@@ -48,22 +54,22 @@ export function validateSelection(
   pages: WebFetchPage[],
   knownUrls: string[],
 ): Selection {
-  if (!selectionValidator.check(value)) throw new Error("Invalid selection; at most 20 complete articles are allowed");
+  if (!selectionValidator.check(value)) throw new SelectionError("invalid_selection_schema", "Invalid selection; at most 20 complete articles are allowed");
   const seen = new Set(knownUrls.map(canonicalUrl));
   const articles = value.articles.map((article) => {
     const link = canonicalUrl(article.link);
-    if (seen.has(link)) throw new Error("Duplicate or previously published article");
+    if (seen.has(link)) throw new SelectionError("duplicate_article", "Duplicate or previously published article");
     seen.add(link);
     const day = new Date(`${article.publishedAt}T00:00:00.000Z`);
     if (!Number.isFinite(day.getTime()) || day.toISOString().slice(0, 10) !== article.publishedAt ||
       article.publishedAt < window.start.slice(0, 10) || article.publishedAt >= window.end.slice(0, 10)) {
-      throw new Error("Article publication date is outside the reporting window");
+      throw new SelectionError("outside_window", "Article publication date is outside the reporting window");
     }
     const page = pages.find((page) => page.status >= 200 && page.status < 300 &&
       canonicalUrl(page.finalUrl) === link && page.content.includes(article.dateEvidence));
-    if (!page) throw new Error("Read the canonical source and quote its publication-date evidence before selecting it");
+    if (!page) throw new SelectionError("missing_date_evidence", "Read the canonical source and quote its publication-date evidence before selecting it");
     if (![article.title, article.description, article.relevance].every((text) => text.trim().length > 0)) {
-      throw new Error("Article fields must not be blank");
+      throw new SelectionError("blank_fields", "Article fields must not be blank");
     }
     return { ...article, link, title: article.title.trim(), description: article.description.trim() };
   });
