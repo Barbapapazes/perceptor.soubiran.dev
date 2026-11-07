@@ -1,0 +1,4 @@
+# Local placeholders only. Never commit a real Access service token.
+# Grant this service token access only to the API's internal quick-news submission route.
+ACCESS_CLIENT_ID=replace-with-service-token-client-id.access
+ACCESS_CLIENT_SECRET=replace-with-service-token-client-secret
