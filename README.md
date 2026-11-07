@@ -1,86 +1,182 @@
 # Perceptor
 
-Worker Cloudflare minimal : chaque requête reçoit `200`, `Hello World!` et
-`Content-Type: text/plain; charset=utf-8`.
+Weekly Quick News discovery with **Pi Durable on Cloudflare Workers**. Perceptor
+researches, reads and selects **zero to 20 articles** for human review. **20 is a
+ceiling, never a target or minimum.** It never publishes articles or starts the
+existing Quick News generation pipeline.
 
-## Prérequis
+## Editorial policy
 
-- Node.js **24.22.0** (version fixée dans `.node-version` et compatible avec `cf`).
-- pnpm **10.34.5** (déclaré dans `packageManager`).
+`src/editorial.ts` defines the research brief. It was informed by read-only samples
+of the production public feed (`/api/quick-news`, pages 1, 3 and 6) on 2026-11-07:
 
-Avec nvm :
+- Practical AI/agent engineering: harnesses, memory, context, orchestration,
+  evaluation, cost, human judgment and operational trade-offs.
+- Web development, developer tools, cloud/databases, security, useful research,
+  first-hand engineering reports, postmortems and substantial technical essays.
+- Original titles, including French titles; concise **English** descriptions that
+  explain a specific contribution or argument and attribute vendor/author claims.
+- Primary sources preferred, without excluding independent authors. No generic
+  tech-news filler, forced topic quotas, hype or recycled announcements.
 
-```sh
-nvm install 24.22.0
-nvm use 24.22.0
-pnpm install --frozen-lockfile
-```
+Before research, Perceptor snapshots up to 75 published articles from the public
+feed for duplicate avoidance and editorial context. This data is untrusted reference
+material, not instructions. The feed must be available; preparation retries instead
+of researching blindly. The API remains the final URL-deduplication backstop.
 
-Aucun compte Cloudflare n'est nécessaire pour développer, tester ou construire.
+## Execution
 
-## Commandes
+1. A cron fires **Monday at 08:00 UTC**, with no daylight-saving adjustment.
+2. A named SQLite Durable Object is created/resumed for that scheduled event.
+3. A durable control job submits an idempotent operation to `PiHarness`.
+4. Native `web_search` (Ceramic via AI Gateway) and `web_fetch` tools research the
+   **seven complete UTC calendar days preceding the trigger date**. The end date
+   is exclusive, so a Monday run covers the previous Monday through Sunday.
+5. `save_selection` validates and freezes the shortlist and its source evidence.
+6. Nonempty selections become a persisted outbox batch, delivered by application
+   code to `https://api.soubiran.dev/api/internal/quick-news-submissions`.
+   Empty selections finish locally and make **no submission request**.
 
-```sh
-pnpm dev             # cf dev, http://localhost:5173
-pnpm check           # Formatage, lint, génération des types et TypeScript
-pnpm format          # Formater avec Vite+
-pnpm test            # Tests dans workerd via @cloudflare/vitest-plugin
-pnpm test:watch      # Tests en mode watch
-pnpm build           # cf build, qui utilise Vite+
-pnpm deploy:dry-run  # Construire et valider sans déployer ni appeler l'API
-```
+Each run has independent context, cached search responses/pages, budget counters,
+selection evidence, a frozen delivery batch and its acknowledgement. Durable state
+is stored in the object's SQLite database, separately from Pi's `pi_*` tables.
+No filesystem workspace, shell, MCP connection, arbitrary execution, Queue,
+Workflow or browser session is needed.
 
-Le projet utilise Vite+ et le nouveau CLI `cf` avec le plugin Cloudflare Vite v2.
-**`cf` et le plugin v2 sont en bêta** ; leurs versions sont fixées dans
-`package.json` et les résolutions sont conservées dans `pnpm-lock.yaml`.
-Les alias et overrides Vite/Vitest dans `pnpm-workspace.yaml` proviennent du
-migrateur officiel Vite+ et permettent aux plugins d'utiliser le même outillage.
+`GET /` returns public service metadata only (liveness, not research health). There
+is no public run trigger, transcript or credential endpoint. `/ops/*` requires a
+separate operations secret and exposes summaries, selected evidence, operational
+health and human-review feedback—not research or delivery controls. Internal
+`begin(scheduledTime)` RPC can redispatch the same retained run identity; it does
+not overwrite completed/failed selections.
 
-## Configuration
+### Limits and recovery
 
-- `cloudflare.config.ts` : source de vérité du Worker `perceptor`, date de
-  compatibilité et observabilité. Aucun binding ni domaine configuré.
-- `vite.config.ts` : intégration Cloudflare Vite.
-- `vitest.config.ts` : tests Vite+ utilisant le plugin Cloudflare et la même
-  configuration Worker ; les bindings distants sont désactivés pour les tests.
-- `.cloudflare/` : types et builds générés, ignorés par Git. Le build Cloudflare
-  produit les source maps du Worker automatiquement.
+- At most **40 search attempts**, **40 source-fetch attempts**, **36 tool rounds**
+  and **12,000 output tokens per model request**. Tools execute sequentially.
+- Research deadline: 20 minutes. Checked before requests/tools and by the durable
+  controller; in-flight calls are bounded separately, so this is not an exact
+  platform-level wall-clock cutoff.
+- Native tool deadlines: 20 seconds; model request deadline: 120 seconds.
+- Cached reads do not consume another network-attempt reservation. An interrupted
+  uncached search/fetch can be billed again after replay and consumes another
+  reservation. Failed attempts count, too.
+- Source response cap: 1 MB; cached converted pages: 160,000 characters; tool
+  windows: 16,000 characters. Normalization strips tracking parameters/fragments
+  without discarding semantic query parameters.
+- Selections require a successfully fetched canonical source, a valid publication
+  date in the window, and a verbatim date-evidence snippet present in that source.
+  The model still interprets what the date means; this is evidence for human review,
+  not a guarantee of factual correctness or a trusted structured publisher timestamp.
+- The unified Web Search API has no documented publication-date filter. Never
+  substitute search snippets, retrieval time or Last-Modified for publication.
+- Delivery uses identical persisted payload/hash on retries, with at most eight
+  attempts and exponential backoff. Network errors, 408, 429 and 5xx are retryable;
+  other non-success responses fail the run. Unexpected redirects are not followed.
+- The API checks `Idempotency-Key == batch_id` and deduplicates by URL. This is not
+  a transactional exactly-once guarantee across Cloudflare and the API.
+- Failed runs retain state and log `perceptor.failed`; successful delivery logs
+  `perceptor.delivered`; empty selections log `perceptor.empty`. A separate hourly
+  cron reconciles authoritative run state and detects missing, failed, stalled and
+  overdue runs. Configure Issues notification destinations and an external check of
+  `/ops/health` before unattended production use. Default application logs/traces do
+  not contain credentials, queries, prompts or source bodies.
 
-Ne pas ajouter de configuration Wrangler parallèle à cette chaîne `cf`.
-Ne jamais versionner de secrets ; les fichiers `.env*` et `.dev.vars*` locaux
-sont ignorés, à l'exception des éventuels exemples.
+Pi Durable is experimental. `agents@0.33.0` and the Pi packages are pinned to the
+compatible `1.5.0` line. Do not roll conversation data back to an older Pi minor.
+Terminal run evidence, Pi data, summaries and review feedback expire after 180 days
+via the watchdog's retention sweep (active runs are never automatically deleted).
+Small expiration tombstones prevent redispatching deleted runs. Browser fallback
+and late-discovered older articles are not part of v1; unreadable or undated sources
+are skipped rather than guessed.
 
-## MCP Cloudflare pour pi
+## Observability
 
-Le seul serveur déclaré dans `.pi/mcp.json` est `cloudflare`, connecté en HTTP à
-`https://mcp.cloudflare.com/mcp`. La configuration est locale au projet, mais le
-serveur est hébergé par Cloudflare. Aucun token n'est enregistré dans le dépôt.
+See **[the observability runbook](docs/observability.md)** for Cloudflare Agent
+Tracing, Gateway correlation, privacy/payload controls, operations/review examples,
+retention, watchdog thresholds, notification setup and the supervised rollout checklist.
+The Agents dashboard is the execution-debugging UI; durable summaries plus review
+feedback are the long-term evaluation record. Native traces are not lossless evidence.
 
-1. Ouvrir pi dans ce dossier et accorder la confiance au projet (`/trust`).
-2. Recharger avec `/reload` si la session était déjà ouverte.
-3. Si une authentification est demandée, utiliser `/mcp login cloudflare` dans pi
-   ou `pi mcp login cloudflare` depuis le terminal.
-4. Vérifier avec `/mcp` ou `pi mcp list`.
+## Configuration and credentials
 
-N'autoriser que les permissions Cloudflare nécessaires. Les identifiants OAuth
-sont gérés par pi dans son stockage utilisateur, hors du projet.
+`cloudflare.config.ts` is the only Worker configuration. Keep the existing **cf +
+Cloudflare Vite v2 + Vite+** toolchain; do not add a parallel Wrangler configuration.
+The cf tooling and programmatic configuration are beta and pinned in the lockfile.
 
-## Déploiement volontaire
+Configured bindings:
 
-Aucun déploiement n'est effectué lors de l'installation ou des vérifications.
-Quand le compte et le domaine auront été choisis :
+| Binding | Purpose |
+| --- | --- |
+| `AI` | Workers AI binding for Gateway inference/search and document conversion |
+| `RESEARCH` | SQLite-backed `ResearchAgent` Durable Object |
+| `OBSERVATIONS` | Separate SQLite-backed observation store and watchdog |
+| `VERSION` | Cloudflare deployment/version metadata |
+| `OPERATIONS_TOKEN` | Secret: independent operations API bearer token, at least 32 characters |
+| `TRACE_PAYLOADS` | `false` by default; explicitly opt in to bounded replay payloads |
+| `AI_GATEWAY` | Gateway ID, default `perceptor` |
+| `MODEL` | Catalog model, default `openai/gpt-6.1-sol` |
+| `ACCESS_CLIENT_ID` | Secret: API Cloudflare Access service-token client ID |
+| `ACCESS_CLIENT_SECRET` | Secret: corresponding client secret |
 
-```sh
-pnpm exec cf auth login
-pnpm deploy
-```
+The output-budget hook supports catalog models using OpenAI Responses or Anthropic
+Messages. Extend that policy deliberately before selecting another wire format.
 
-L'authentification de `cf` est distincte de celle du MCP pi.
+Before deploying:
 
-## Documentation
+1. Deploy the companion API change accepting **1–20 articles per batch**. The API
+   continues rejecting empty batches; Perceptor handles those locally.
+2. Create the `perceptor` AI Gateway in the Worker's account. Enable authenticated
+   Unified Billing with sufficient credits, or configure supported provider keys
+   on the gateway. Search uses Ceramic; inference uses the configured catalog model.
+   No provider key is stored in this Worker.
+3. Configure Gateway spend limits and rate limits. Spend limits are eventually
+   consistent and complement, rather than replace, the application budgets.
+4. Create a least-privilege Cloudflare Access service token with a Service Auth
+   policy for the API's internal submission endpoint. The origin must not allow an
+   Access bypass. Store the two secrets using Cloudflare's dashboard/secret tooling.
+   Perceptor does **not** use Laravel bearer authentication.
+5. Provision a separate high-entropy `OPERATIONS_TOKEN` of at least 32 characters.
+   Configure Issues automations, an external authenticated `/ops/health` check, and
+   optional OTel exports as described in the observability runbook. Review the weekly
+   and watchdog cron schedules, Gateway, model, privacy and retention settings.
+6. Deploy a CI-built artifact intentionally. No deployment is performed by
+   installation. Perform an explicitly authorized supervised run before unattended use.
 
-- [Premier Worker avec cf](https://developers.cloudflare.com/cf/get-started/first-worker/)
-- [Vite+ sur Workers](https://developers.cloudflare.com/workers/vite-plugin/vite-plus/)
-- [Tests Cloudflare Vitest](https://developers.cloudflare.com/workers/testing/vitest-integration/)
-- [Migration Vite+](https://viteplus.dev/guide/migrate)
-- [MCP Cloudflare](https://github.com/cloudflare/mcp)
+Access headers are attached only to the fixed API submission URL; the model cannot
+choose an authenticated destination. Public feed requests and research tools never
+receive Access credentials. `web_fetch` retains the SDK's public-host/redirect
+checks and blocks the API/Perceptor hosts. Those checks do not resolve public DNS
+names to detect private addresses: they are not a complete DNS-rebinding defense.
+External content remains untrusted even with the SDK's prompt-injection wrapper.
+
+## Development
+
+Requires Node.js **24.22.0** and pnpm **10.34.5**, as pinned in the repository.
+Copy `.dev.vars.example` to `.dev.vars` only if deliberately enabling local service
+calls. Never commit real secrets. AI/search/conversion calls use live Cloudflare
+services and can incur charges; the test suite uses fakes and remote bindings are
+disabled in `vitest.config.ts`.
+
+Existing scripts remain available: `dev`, `check`, `format`, `test`, `test:watch`,
+`build`, `typecheck`, `deploy:dry-run`, and `deploy`. Build artifacts in CI and deploy
+the prebuilt output; do not build or run verification on the constrained Pi server.
+See [cf in CI](https://developers.cloudflare.com/cf/ci/) for prebuilt deployment.
+
+The project-local `.pi/mcp.json` configures Cloudflare's hosted MCP server at
+`https://mcp.cloudflare.com/mcp` for **development**, not for the deployed agent.
+Its OAuth credentials are managed by Pi outside the repository and are distinct
+from cf authentication and the API Access service token.
+
+## References
+
+- [Agent Tracing](https://developers.cloudflare.com/agents/runtime/observability/tracing/)
+- [Workers custom spans](https://developers.cloudflare.com/workers/observability/traces/custom-spans/)
+- [Pi harness](https://developers.cloudflare.com/agents/harnesses/pi/)
+- [Pi extensions and replay safety](https://developers.cloudflare.com/agents/harnesses/pi/extensions/)
+- [Pi AI / Gateway provider](https://developers.cloudflare.com/agents/models/pi-ai/)
+- [Web search tool](https://developers.cloudflare.com/agents/tools/web-search/)
+- [Web fetch tool](https://developers.cloudflare.com/agents/tools/web-fetch/)
+- [Search providers and pricing](https://developers.cloudflare.com/web-search/providers/)
+- [Lifecycle jobs](https://developers.cloudflare.com/agents/runtime/lifecycle/job-queue/)
+- [Programmatic cf configuration](https://developers.cloudflare.com/cf/projects/cloudflare-config/)

@@ -1,0 +1,7 @@
+# Local placeholders only. Never commit a real Access service token.
+# Grant this service token access only to the API's internal quick-news submission route.
+ACCESS_CLIENT_ID=replace-with-service-token-client-id.access
+ACCESS_CLIENT_SECRET=replace-with-service-token-client-secret
+# Independent high-entropy token (>=32 characters). Never use Access credentials here.
+# /ops endpoints fail closed when absent or shorter than 32 characters.
+OPERATIONS_TOKEN=replace-with-independent-operations-token-at-least-32-characters
